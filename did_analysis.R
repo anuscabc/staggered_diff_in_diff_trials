@@ -8,10 +8,10 @@ cat("\014")               # Clear console
 # ===================================================
 # LOAD LIBRARIES
 # ===================================================
-library(tidyverse)        # dplyr, ggplot2, readr, etc.
-library(data.table)       # fread() if needed
-library(did)              # att_gt(), aggte(), ggdid()
-library(fixest)           # feols(), sunab()
+library(tidyverse)        
+library(data.table)       
+library(did)              
+library(fixest)           
 
 # ===================================================
 # SET WORKING DIRECTORY
@@ -54,12 +54,9 @@ df <- df %>%
   mutate(
     event_time = ifelse(treated == 1, year - first_treat, NA)
   )
-# include even study modification to 
-did_fe <- feols(y1 ~ treated * post | firm_id + year, data = df)
-summary(did_fe)
 
 did_event <- feols(
-  y1 ~ i(event_time, treated, ref = -1) | firm_id + year,
+  y3 ~ i(event_time, treated, ref = -1) | firm_id + year,
   cluster = "firm_id",
   data = df
 )

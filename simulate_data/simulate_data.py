@@ -20,7 +20,7 @@ class FirmPanelSimulator:
         self.panel = None
 
         # Probability of dropping a firm-year row
-        self.drop_prob = 0.3  
+        self.drop_prob = 0.2
 
 
     def export_to_csv(self, filename="simulated_panel.csv"):
@@ -113,7 +113,7 @@ class FirmPanelSimulator:
 
         panel["y3"] = (
             panel["firm_fe"] +
-            panel["year_fe"] + 
+            panel["year_fe"]  
             - 5.0 * panel["post_treatment"].astype(int) +
             noise3
         )
