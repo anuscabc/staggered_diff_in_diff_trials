@@ -1,0 +1,2 @@
+outcome,n_rows_used,n_businesses,n_persons,n_groups,n_years,n_gt_cells,n_gt_used,last_control_year,twfe_r2,twfe_r2_within,twfe_nobs
+base_income,296957,81,37343,9,11,72,67,2017,NA,NA,NA

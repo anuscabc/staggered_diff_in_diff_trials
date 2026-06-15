@@ -1,0 +1,277 @@
+# =============================================================================
+# STAGGERED DiD — INDIVIDUAL-LEVEL OUTCOMES, FIRM-LEVEL TREATMENT
+#
+# Estimators:  (A) Callaway & Sant'Anna (2021) — did::att_gt
+#              (B) Sun & Abraham (2021)         — fixest::feols + sunab()
+#
+# Data: incumbent workers (>= 3 years pre-treatment) at treated and
+#       never-treated firms.  Treatment is assigned at the firm level;
+#       each worker works at exactly one firm and exits the dataset.
+#       Workers have variable post-treatment spell lengths.
+#
+# Cluster: business_id — treatment is at the firm level, so all inference
+#          is clustered there regardless of whether we use worker FE or not.
+# =============================================================================
+
+rm(list = ls(all.names = TRUE)); cat("\014"); graphics.off()
+
+# ---- Packages ----------------------------------------------------------------
+pkgs <- c("readr", "dplyr", "tidyr", "tibble",
+          "did", "fixest", "ggplot2", "stringr", "broom")
+to_install <- setdiff(pkgs, rownames(installed.packages()))
+if (length(to_install)) install.packages(to_install, repos = "https://cloud.r-project.org")
+invisible(lapply(pkgs, library, character.only = TRUE))
+
+# ---- Paths -------------------------------------------------------------------
+root <- "/Users/api970/Desktop/Project_InnovationBox/staggered_diff_in_diff_trials/Estimates_individual_level"
+setwd(root)
+
+dir_out    <- file.path(root, "outputs")
+dir_fig_cs <- file.path(root, "figures", "callaway_santanna")
+dir_fig_sa <- file.path(root, "figures", "sun_abraham")
+for (d in c(dir_out, dir_fig_cs, dir_fig_sa)) dir.create(d, showWarnings = FALSE, recursive = TRUE)
+
+# ---- Load data ---------------------------------------------------------------
+df <- read_csv(
+  file.path(root, "worker_panel_incumbents.csv"),
+  col_types = cols(
+    personal_id  = col_integer(),
+    business_id  = col_integer(),
+    year         = col_integer(),
+    first_treat  = col_integer(),   # 0 = never treated (did package convention)
+    treated      = col_integer(),
+    post         = col_integer(),
+    y            = col_double(),
+    true_att     = col_double()
+  )
+)
+
+cat(sprintf(
+  "Rows: %s | Workers: %s | Firms: %s | Treated firms: %s | Years: %d–%d\n",
+  format(nrow(df), big.mark = ","),
+  format(n_distinct(df$personal_id), big.mark = ","),
+  n_distinct(df$business_id),
+  n_distinct(df$business_id[df$treated == 1]),
+  min(df$year), max(df$year)
+))
+
+# Sun & Abraham needs Inf (not 0) for never-treated
+df <- df %>%
+  mutate(first_treat_sa = if_else(first_treat == 0L, Inf, as.double(first_treat)))
+
+# Event-time window for dynamic aggregation (cap pre at -3, post at +5)
+max_post <- df %>%
+  filter(first_treat > 0) %>%
+  mutate(et = year - first_treat) %>%
+  summarise(m = min(max(et), 5L)) %>%
+  pull(m)
+min_e <- -3L
+max_e <- as.integer(max_post)
+cat(sprintf("Event-time window used for aggregation: [%d, %d]\n", min_e, max_e))
+
+outcome <- "y"
+
+# =============================================================================
+# (A) CALLAWAY & SANT'ANNA (2021)
+# =============================================================================
+#
+# panel = FALSE:
+#   Workers exit the dataset at different times (variable post-treatment
+#   spell lengths), creating an unbalanced panel.  The repeated cross-section
+#   approach uses all workers observed at each time t instead of requiring
+#   the same workers to appear in consecutive periods, making it robust to
+#   this attrition by design.
+#
+# control_group = "nevertreated":
+#   Only firms that are never treated serve as controls.
+#
+# clustervars = "business_id":
+#   Treatment is assigned at the firm level; all standard errors are
+#   clustered there.
+# =============================================================================
+
+message("\n=== Callaway & Sant'Anna (2021) ===")
+
+cs_attgt <- did::att_gt(
+  yname         = outcome,
+  tname         = "year",
+  idname        = "personal_id",
+  gname         = "first_treat",        # 0 = never treated
+  data          = df,
+  panel         = FALSE,
+  control_group = "nevertreated",
+  clustervars   = "business_id"
+)
+
+summary(cs_attgt)
+
+# --- Aggregations ---
+cs_simple  <- did::aggte(cs_attgt, type = "simple",  na.rm = TRUE)
+cs_dynamic <- did::aggte(cs_attgt, type = "dynamic", na.rm = TRUE,
+                          min_e = min_e, max_e = max_e)
+cs_group   <- did::aggte(cs_attgt, type = "group",   na.rm = TRUE)
+
+cat(sprintf(
+  "\nCS Overall ATT: %.4f  (SE = %.4f,  95%% CI [%.4f, %.4f])\n",
+  cs_simple$overall.att, cs_simple$overall.se,
+  cs_simple$overall.att - 1.96 * cs_simple$overall.se,
+  cs_simple$overall.att + 1.96 * cs_simple$overall.se
+))
+
+# --- Figures ---
+# Dynamic event-study (main plot)
+cs_dyn_plot <- ggdid(cs_dynamic) +
+  labs(
+    title    = "Callaway & Sant'Anna: Dynamic ATT(e)",
+    subtitle = "Incumbent workers | treatment at firm level | clustered at firm",
+    x        = "Event time (years relative to treatment)",
+    y        = "ATT estimate"
+  ) +
+  theme_bw(base_size = 13) +
+  geom_vline(xintercept = -0.5, linetype = "dashed", colour = "grey40")
+ggsave(file.path(dir_fig_cs, "cs_dynamic.png"),
+       plot = cs_dyn_plot, width = 9, height = 5, dpi = 300)
+
+# Group-level aggregation
+cs_grp_plot <- ggdid(cs_group) +
+  labs(
+    title    = "Callaway & Sant'Anna: Group-Level ATT",
+    subtitle = "Averaged over post-treatment periods within each cohort",
+    x        = "Treatment cohort (first_treat year)",
+    y        = "ATT estimate"
+  ) +
+  theme_bw(base_size = 13)
+ggsave(file.path(dir_fig_cs, "cs_group.png"),
+       plot = cs_grp_plot, width = 9, height = 5, dpi = 300)
+
+# --- Export CSVs ---
+# Group-time ATT
+write_csv(
+  tibble(
+    outcome    = outcome,
+    group      = cs_attgt$group,
+    year       = cs_attgt$t,
+    event_time = cs_attgt$t - cs_attgt$group,
+    att        = cs_attgt$att,
+    se         = cs_attgt$se,
+    ci_low     = cs_attgt$att - 1.96 * cs_attgt$se,
+    ci_high    = cs_attgt$att + 1.96 * cs_attgt$se
+  ),
+  file.path(dir_out, "cs_group_time_ATT.csv")
+)
+
+# Simple (overall) ATT
+write_csv(
+  tibble(
+    outcome = outcome,
+    att     = cs_simple$overall.att,
+    se      = cs_simple$overall.se,
+    ci_low  = cs_simple$overall.att - 1.96 * cs_simple$overall.se,
+    ci_high = cs_simple$overall.att + 1.96 * cs_simple$overall.se
+  ),
+  file.path(dir_out, "cs_agg_simple.csv")
+)
+
+# Dynamic ATT(e)
+write_csv(
+  tibble(
+    outcome    = outcome,
+    event_time = cs_dynamic$egt,
+    att        = cs_dynamic$att.egt,
+    se         = cs_dynamic$se.egt,
+    ci_low     = cs_dynamic$att.egt - 1.96 * cs_dynamic$se.egt,
+    ci_high    = cs_dynamic$att.egt + 1.96 * cs_dynamic$se.egt
+  ) %>% filter(!is.na(att)),
+  file.path(dir_out, "cs_dynamic_event_time.csv")
+)
+
+# Group-level ATT
+write_csv(
+  tibble(
+    outcome = outcome,
+    group   = cs_group$egt,
+    att     = cs_group$att.egt,
+    se      = cs_group$se.egt,
+    ci_low  = cs_group$att.egt - 1.96 * cs_group$se.egt,
+    ci_high = cs_group$att.egt + 1.96 * cs_group$se.egt
+  ) %>% filter(!is.na(att)),
+  file.path(dir_out, "cs_group_ATT.csv")
+)
+
+message("CS: all outputs saved.")
+
+# =============================================================================
+# (B) SUN & ABRAHAM (2021) via fixest::sunab()
+# =============================================================================
+#
+# personal_id FE: absorbs all time-invariant worker heterogeneity.
+# year FE:        absorbs common macro shocks.
+# cluster ~business_id: treatment is at firm level.
+# first_treat_sa: Inf for never-treated (sunab requirement).
+# =============================================================================
+
+message("\n=== Sun & Abraham (2021) ===")
+
+sa_model <- fixest::feols(
+  y ~ sunab(first_treat_sa, year) | personal_id + year,
+  cluster = ~business_id,
+  data    = df
+)
+
+summary(sa_model)
+
+# --- Figure ---
+png(filename = file.path(dir_fig_sa, "sa_dynamic.png"),
+    width = 1000, height = 620, res = 120)
+iplot(
+  sa_model,
+  ref.line = 0,
+  main     = "Sun & Abraham (2021): Dynamic Treatment Effects",
+  xlab     = "Event time (years relative to treatment)",
+  ylab     = "ATT estimate"
+)
+dev.off()
+
+message("SA figure saved.")
+
+# --- Export CSV ---
+sa_tidy <- broom::tidy(sa_model, conf.int = TRUE) %>%
+  mutate(
+    outcome    = outcome,
+    event_time = as.integer(stringr::str_extract(term, "(?<=::)-?\\d+"))
+  ) %>%
+  select(
+    outcome, term, event_time,
+    estimate,
+    std_error = std.error,
+    t_value   = statistic,
+    p_value   = p.value,
+    ci_low    = conf.low,
+    ci_high   = conf.high
+  )
+write_csv(sa_tidy, file.path(dir_out, "sa_effects.csv"))
+message("SA: all outputs saved.")
+
+# =============================================================================
+# RUN METRICS
+# =============================================================================
+run_metrics <- tibble(
+  outcome           = outcome,
+  n_rows            = nrow(df),
+  n_workers         = n_distinct(df$personal_id),
+  n_firms           = n_distinct(df$business_id),
+  n_firms_treated   = n_distinct(df$business_id[df$treated == 1]),
+  n_cohorts         = n_distinct(df$first_treat[df$first_treat > 0]),
+  n_years           = n_distinct(df$year),
+  event_time_min    = min_e,
+  event_time_max    = max_e,
+  cs_overall_att    = cs_simple$overall.att,
+  cs_overall_se     = cs_simple$overall.se,
+  sa_nobs           = fixest::nobs(sa_model),
+  sa_r2_within      = as.numeric(fixest::fitstat(sa_model, "r2_within"))
+)
+write_csv(run_metrics, file.path(dir_out, "run_metrics.csv"))
+
+message("\nAll done.\nOutputs: ", normalizePath(dir_out))
+message("Figures CS: ", normalizePath(dir_fig_cs))
+message("Figures SA: ", normalizePath(dir_fig_sa))
