@@ -55,6 +55,20 @@ cat(sprintf(
   min(df$year), max(df$year)
 ))
 
+# Truncate to exactly 3 pre-treatment years for all treated workers.
+# Drops worker-year rows where year < first_treat - 3.
+# Never-treated workers (first_treat == 0) are kept in full.
+# This standardises the pre-period window across all cohorts so that
+# late cohorts (e.g. 2018) no longer supply event times as far back as -13.
+df <- df %>%
+  filter(first_treat == 0L | year >= first_treat - 3L)
+
+cat(sprintf(
+  "After pre-period trim: Rows: %s | Workers: %s\n",
+  format(nrow(df), big.mark = ","),
+  format(n_distinct(df$personal_id), big.mark = ",")
+))
+
 # Sun & Abraham needs Inf (not 0) for never-treated
 df <- df %>%
   mutate(first_treat_sa = if_else(first_treat == 0L, Inf, as.double(first_treat)))
